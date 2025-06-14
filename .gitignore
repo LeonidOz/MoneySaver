@@ -1,0 +1,7 @@
+.idea
+.vscode
+.continue
+*.txt
+*.log
+node_modules
+wallets.json
