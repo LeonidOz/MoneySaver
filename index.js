@@ -20,9 +20,22 @@ const tronWeb = new TronWeb({
 app.all('/', async (req, res) => {
     const { wallet, amount } = req.query.wallet ? req.query : req.body;
 
-    if (!wallet || !amount || isNaN(amount) || amount <= 0) {
-        console.log(`[${new Date().toISOString()}] ❌ Invalid wallet or amount: ${JSON.stringify({ wallet, amount })}`);
-        return res.status(400).send('❌ Invalid wallet or amount (must be a positive number)');
+    let sendAll = false;
+    let parsedAmount = amount;
+
+    if (!wallet) {
+        console.log(`[${new Date().toISOString()}] ❌ Invalid wallet: ${JSON.stringify({ wallet, amount })}`);
+        return res.status(400).send('❌ Invalid wallet');
+    }
+
+    if (amount === 'all') {
+        sendAll = true;
+    } else {
+        parsedAmount = Math.floor(Number(amount));
+        if (isNaN(parsedAmount) || parsedAmount <= 0) {
+            console.log(`[${new Date().toISOString()}] ❌ Invalid amount: ${JSON.stringify({ wallet, amount })}`);
+            return res.status(400).send('❌ Invalid amount (must be a positive number)');
+        }
     }
 
     if (!wallets[wallet]) {
@@ -42,16 +55,25 @@ app.all('/', async (req, res) => {
             tronWeb.setPrivateKey(privateKey);
 
             const balance = await usdtContract.balanceOf(wallet).call();
+
+            if (sendAll) {
+                const minRemain = 5 * 1e6; // 5 USDT в Sun
+                if (balance.toNumber() <= minRemain) {
+                    throw new Error(`На кошельке < 5 USDT (баланс: ${balance.toNumber() / 1e6})`);
+                }
+                parsedAmount = Math.floor((balance.toNumber() - minRemain) / 1e6);
+            }
+
             const balanceNum = balance.toNumber(); // Конвертируем BigNumber в число
 
-            if (balanceNum < tronWeb.toSun(amount)) {
-                throw new Error(`Недостаточно USDT на балансе (есть: ${balanceNum / 1e6}, требуется: ${amount}`);
+            if (balanceNum < tronWeb.toSun(parsedAmount)) {
+                throw new Error(`Недостаточно USDT на балансе (есть: ${balanceNum / 1e6}, требуется: ${parsedAmount})`);
             }
             console.log(`Баланс USDT: ${balanceNum / 1e6}`);
 
             const tx = await usdtContract.transfer(
                 toAddress,
-                tronWeb.toSun(amount)
+                tronWeb.toSun(parsedAmount)
             ).send();
 
             console.log(`[${new Date().toISOString()}] ✅ TX Sent: ${tx}`);
@@ -98,14 +120,29 @@ app.all('/', async (req, res) => {
             const toAddress = wallets[wallet][1];
 
             const contract = new web3.eth.Contract(USDT_ABI, USDT_CONTRACT);
-            const value = BigInt(Math.floor(amount * 1e6)); // 6 знаков после запятой
+
+            let value;
+            if (sendAll) {
+                const minRemain = BigInt(5 * 1e6); // 5 USDT
+                const balance = await contract.methods.balanceOf(account).call({});
+                const balanceBN = BigInt(balance);
+
+                if (balanceBN <= minRemain) {
+                    throw new Error(`На кошельке < 5 USDT (баланс: ${Number(balanceBN) / 1e6})`);
+                }
+                value = balanceBN - minRemain;
+            } else {
+                value = BigInt(parsedAmount * 1e6);
+                const balance = await contract.methods.balanceOf(account).call({});
+                const balanceBN = BigInt(balance);
+                if (balanceBN < value) {
+                    throw new Error(`Недостаточно USDT (есть: ${Number(balanceBN) / 1e6}, требуется: ${parsedAmount})`);
+                }
+            }
 
             const balance = await contract.methods.balanceOf(account).call({});
             const balanceBN = BigInt(balance);
 
-            if (balanceBN < value) {
-                throw new Error(`Недостаточно USDT (есть: ${Number(balanceBN) / 1e6}, требуется: ${amount}`);
-            }
             console.log(`Баланс USDT: ${Number(balanceBN) / 1e6}`);
 
             const data = contract.methods.transfer(toAddress, value.toString()).encodeABI();
